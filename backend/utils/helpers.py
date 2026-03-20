@@ -25,6 +25,16 @@ def chunk_id(file_path: str, start_line: int, chunk_type: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:16]
 
 
+def stable_repo_hash(repo_url: str) -> str:
+    """Stable hash for repo URL — safe across process restarts."""
+    return hashlib.md5(repo_url.encode()).hexdigest()[:12]
+
+
+def collection_name_for(repo_url: str) -> str:
+    """Deterministic ChromaDB collection name for a repo."""
+    return f"repo_{stable_repo_hash(repo_url)}"
+
+
 def read_file_safe(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")
@@ -53,6 +63,22 @@ class CacheManager:
         path = self.cache_dir / f"{self._key(namespace, identifier)}.json"
         if path.exists():
             try:
+                return json.loads(path.read_text())
+            except Exception:
+                return None
+        return None
+
+    def get_with_ttl(self, namespace: str, identifier: str, ttl: int) -> dict | None:
+        """Get cached data only if it was written within ttl seconds."""
+        if not settings.enable_cache:
+            return None
+        path = self.cache_dir / f"{self._key(namespace, identifier)}.json"
+        if path.exists():
+            try:
+                import time
+                age = time.time() - path.stat().st_mtime
+                if age > ttl:
+                    return None
                 return json.loads(path.read_text())
             except Exception:
                 return None

@@ -1,10 +1,20 @@
 """Repository cloning and management."""
 import os
+import stat
 import shutil
 import hashlib
+import logging
 from pathlib import Path
-from git import Repo
+from git import Repo, InvalidGitRepositoryError
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _force_remove_readonly(func, path, exc_info):
+    """Handle Windows [WinError 5] by clearing read-only flag and retrying."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 
 class RepoManager:
@@ -15,12 +25,30 @@ class RepoManager:
     def _repo_hash(self, url: str) -> str:
         return hashlib.md5(url.encode()).hexdigest()[:12]
 
+    def _safe_rmtree(self, path: Path):
+        """Remove directory tree, handling Windows locked/read-only files."""
+        try:
+            shutil.rmtree(path, onerror=_force_remove_readonly)
+        except Exception as e:
+            logger.warning(f"Could not fully remove {path}: {e}")
+
     def clone(self, repo_url: str, branch: str = "main") -> Path:
         repo_id = self._repo_hash(repo_url)
         target = self.clone_dir / repo_id
 
+        # Reuse existing clone if valid — just fetch latest
         if target.exists():
-            shutil.rmtree(target)
+            try:
+                repo = Repo(str(target))
+                current_branch = repo.active_branch.name
+                if current_branch == branch:
+                    logger.info(f"Reusing existing clone at {target}, pulling latest...")
+                    repo.remotes.origin.pull()
+                    return target
+            except (InvalidGitRepositoryError, Exception) as e:
+                logger.info(f"Existing clone invalid ({e}), re-cloning...")
+
+            self._safe_rmtree(target)
 
         Repo.clone_from(repo_url, str(target), branch=branch, depth=1)
         return target
@@ -96,4 +124,4 @@ class RepoManager:
     def cleanup(self, repo_url: str):
         repo_path = self.get_repo_path(repo_url)
         if repo_path.exists():
-            shutil.rmtree(repo_path)
+            self._safe_rmtree(repo_path)

@@ -1,6 +1,7 @@
 """Code parsing using Tree-sitter and Python AST for function/class extraction."""
 import ast
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from backend.models.schemas import FunctionInfo, CodeChunk
 from backend.utils.helpers import detect_language, chunk_id, read_file_safe, truncate
@@ -190,33 +191,69 @@ class CodeParser:
             imports = self.generic_parser.extract_imports(source, language)
             classes = []
 
-        # Build chunks
+        # Build chunks — function-level first (primary), then class, then file
         chunks = []
 
-        # File-level chunk
-        chunks.append(CodeChunk(
-            chunk_id=chunk_id(rel_path, 0, "file"),
-            file_path=rel_path,
-            chunk_type="file",
-            content=truncate(source, 4000),
-            language=language,
-            start_line=1,
-            end_line=len(lines),
-            metadata={"imports": imports},
-        ))
-
-        # Function-level chunks
+        # Function-level chunks (enriched with context)
         for func in functions:
+            # Enrich: prepend file path + function signature for better retrieval
+            header = f"# File: {rel_path}\n# Function: {func.name}({', '.join(func.parameters)})\n"
+            enriched = header + func.body
             chunks.append(CodeChunk(
                 chunk_id=chunk_id(rel_path, func.start_line, "function"),
                 file_path=rel_path,
                 chunk_type="function",
-                content=func.body,
+                content=truncate(enriched, 3000),
                 language=language,
                 start_line=func.start_line,
                 end_line=func.end_line,
                 metadata={"function_name": func.name, "parameters": func.parameters},
             ))
+
+        # Class-level chunks (Python only — with method signatures)
+        for cls in classes:
+            cls_start = cls.get("start_line", 0)
+            cls_end = cls.get("end_line", cls_start)
+            if cls_start and cls_end and cls_end > cls_start:
+                cls_body = "\n".join(lines[cls_start - 1:min(cls_end, len(lines))])
+            else:
+                cls_body = f"class {cls['name']}: methods={cls['methods']}"
+            header = f"# File: {rel_path}\n# Class: {cls['name']} (bases: {cls.get('bases', [])})\n"
+            enriched = header + truncate(cls_body, 3000)
+            chunks.append(CodeChunk(
+                chunk_id=chunk_id(rel_path, cls_start or 0, "class"),
+                file_path=rel_path,
+                chunk_type="class",
+                content=enriched,
+                language=language,
+                start_line=cls_start or 1,
+                end_line=cls_end or len(lines),
+                metadata={"class_name": cls["name"], "methods": cls["methods"], "bases": cls.get("bases", [])},
+            ))
+
+        # File-level chunk (summary — imports + function signatures, not raw dump)
+        func_sigs = [f"  def {f.name}({', '.join(f.parameters[:4])})" for f in functions[:20]]
+        class_sigs = [f"  class {c['name']}({', '.join(c.get('bases', []))}): {c['methods'][:5]}" for c in classes[:10]]
+        file_summary = (
+            f"# File: {rel_path} ({language}, {len(lines)} lines)\n"
+            f"# Imports: {imports[:15]}\n"
+            f"# Functions:\n" + "\n".join(func_sigs) + "\n"
+        )
+        if class_sigs:
+            file_summary += f"# Classes:\n" + "\n".join(class_sigs) + "\n"
+        # Append start of source for context
+        file_summary += f"\n{truncate(source, 2000)}"
+
+        chunks.append(CodeChunk(
+            chunk_id=chunk_id(rel_path, 0, "file"),
+            file_path=rel_path,
+            chunk_type="file",
+            content=truncate(file_summary, 4000),
+            language=language,
+            start_line=1,
+            end_line=len(lines),
+            metadata={"imports": imports},
+        ))
 
         return {
             "file_path": rel_path,
@@ -231,9 +268,22 @@ class CodeParser:
         }
 
     def parse_repo(self, repo_path: Path, files: list[Path]) -> list[dict]:
+        """Parse all files in parallel using a thread pool."""
+        from config.settings import settings
         results = []
-        for f in files:
-            parsed = self.parse_file(f, repo_path)
-            if parsed:
-                results.append(parsed)
+        max_workers = min(settings.parse_workers, len(files)) if files else 1
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.parse_file, f, repo_path): f
+                for f in files
+            }
+            for future in futures:
+                try:
+                    parsed = future.result()
+                    if parsed:
+                        results.append(parsed)
+                except Exception:
+                    pass  # Skip files that fail to parse
+
         return results

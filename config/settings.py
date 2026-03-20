@@ -7,7 +7,17 @@ class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3"
-    ollama_timeout: int = 120
+    ollama_timeout: int = 300  # 5 min — allows for CoT (3 LLM calls) and large prompts
+    ollama_num_ctx: int = 8192  # Context window size for Ollama models
+
+    # Hybrid Model Strategy — task-specialized models
+    # Defaults to llama3 for all. Install & configure specialized models for better results:
+    #   ICR_MODEL_FAST=phi3            (fast summarization, tech stack, cost)
+    #   ICR_MODEL_CODE=deepseek-coder  (code reasoning, file/function analysis, security)
+    #   ICR_MODEL_DEEP=llama3          (synthesis, recommendations, interview)
+    model_fast: str = "llama3"
+    model_code: str = "llama3"
+    model_deep: str = "llama3"
 
     # Embeddings
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -32,6 +42,18 @@ class Settings(BaseSettings):
     # Cache
     cache_dir: str = "./data/cache"
     enable_cache: bool = True
+
+    # Parallelism
+    llm_concurrency: int = 2  # Ollama queues requests; 2 avoids timeout cascading
+    parse_workers: int = 8
+
+    # Result cache TTL (seconds) — skip re-analysis if last result is within this window
+    result_cache_ttl: int = 3600  # 1 hour
+
+    # Chain-of-Thought — use multi-step reasoning for deep analysis tasks
+    cot_enabled: bool = True
+    # Which tasks get CoT (deep tasks only, fast tasks skip it)
+    cot_tasks: str = "overview,system_flow,security,production,synthesis,recommendations"
 
     class Config:
         env_file = ".env"
