@@ -1,4 +1,9 @@
-"""FastAPI routes for the analysis API — job_id-based."""
+"""FastAPI routes for the analysis API — job_id-based.
+
+Supports two execution modes:
+  - Monolithic: single AnalysisEngine (ICR_MULTI_AGENT_ENABLED=false)
+  - Multi-Agent: Orchestrator with 8 specialized agents (ICR_MULTI_AGENT_ENABLED=true)
+"""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -6,9 +11,10 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from backend.models.schemas import RepoRequest, AnalysisResult, AnalysisStatus
 from backend.analysis.engine import AnalysisEngine
-from backend.llm.ollama_client import ollama_client
+from backend.llm.api_client import api_client
 from backend.embeddings.vector_store import vector_store
 from backend.export.zip_generator import generate_zip
+from config.settings import settings
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -45,12 +51,14 @@ class AnalysisResponse(BaseModel):
 
 @router.get("/health")
 async def health():
-    ollama_ok = await ollama_client.check_health()
-    models = await ollama_client.list_models() if ollama_ok else []
+    api_health = await api_client.check_health()
     return {
         "status": "healthy",
-        "ollama_connected": ollama_ok,
-        "available_models": models,
+        "llm_provider": "openrouter",
+        "model": api_client.model,
+        "api_provider": api_health,
+        "multi_agent_enabled": settings.multi_agent_enabled,
+        "storage_backend": settings.storage_backend,
     }
 
 
@@ -99,7 +107,11 @@ async def analyze_repo(request: RepoRequest, background_tasks: BackgroundTasks):
 async def _run_analysis(job_id: str, repo_url: str, branch: str):
     try:
         result_ref = analysis_store[job_id]
-        await engine.analyze_repo(repo_url, branch, result_ref=result_ref)
+        if settings.multi_agent_enabled:
+            logger.info(f"Using multi-agent pipeline for {repo_url}")
+            await engine.analyze_repo_multi_agent(repo_url, branch, result_ref=result_ref)
+        else:
+            await engine.analyze_repo(repo_url, branch, result_ref=result_ref)
     except Exception as e:
         logger.error(f"Analysis failed for job {job_id}: {e}", exc_info=True)
         if job_id in analysis_store:
@@ -451,6 +463,34 @@ async def agent_query_stream(job_id: str, request: AgentQueryRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/analysis/{job_id}/agent-status")
+async def agent_status(job_id: str):
+    """Get the status of all agents for a multi-agent analysis."""
+    result = _get_job(job_id)
+    return {
+        "job_id": job_id,
+        "status": result.status,
+        "multi_agent": settings.multi_agent_enabled,
+        "provider": "openrouter",
+        "progress_steps": result.progress_steps,
+        "stage_errors": result.stage_errors,
+    }
+
+
+@router.get("/config")
+async def get_config():
+    """Get current system configuration."""
+    return {
+        "llm_provider": "openrouter",
+        "multi_agent_enabled": settings.multi_agent_enabled,
+        "storage_backend": settings.storage_backend,
+        "agent_concurrency": settings.agent_concurrency,
+        "llm_concurrency": settings.llm_concurrency,
+        "cot_enabled": settings.cot_enabled,
+        "api_configured": api_client.is_available(),
+    }
 
 
 def _get_job(job_id: str) -> AnalysisResult:

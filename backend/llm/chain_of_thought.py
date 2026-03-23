@@ -7,7 +7,8 @@ This reduces hallucination by forcing the LLM to show its work.
 """
 import json
 import logging
-from backend.llm.ollama_client import ollama_client
+from backend.llm.api_client import api_client
+# api_client.generate_json is compatible with old ollama_client.generate_json
 from backend.analysis.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ Respond in JSON:
 {{"facts": ["fact 1", "fact 2", ...]}}"""
 
         try:
-            result = await ollama_client.generate_json(prompt, system_prompt=SYSTEM_PROMPT, model=model)
+            result = await api_client.generate_json(prompt, system_prompt=SYSTEM_PROMPT, model=model)
             if isinstance(result, dict) and "facts" in result:
                 return result["facts"]
             if isinstance(result, list):
@@ -98,7 +99,7 @@ Respond in JSON:
 {{"validated_facts": ["fact 1", "fact 2", ...], "removed": ["false fact 1", ...]}}"""
 
         try:
-            result = await ollama_client.generate_json(prompt, system_prompt=SYSTEM_PROMPT, model=model)
+            result = await api_client.generate_json(prompt, system_prompt=SYSTEM_PROMPT, model=model)
             if isinstance(result, dict) and "validated_facts" in result:
                 return result["validated_facts"]
             return facts  # Fallback: return original facts if validation fails
@@ -127,7 +128,7 @@ Do NOT add information beyond what the facts support. If unsure, lower your conf
 {analysis_prompt}"""
 
         try:
-            result = await ollama_client.generate_json(enhanced_prompt, system_prompt=SYSTEM_PROMPT, model=model)
+            result = await api_client.generate_json(enhanced_prompt, system_prompt=SYSTEM_PROMPT, model=model)
             return result
         except Exception as e:
             logger.error(f"Insight generation failed: {e}")
@@ -141,7 +142,7 @@ Do NOT add information beyond what the facts support. If unsure, lower your conf
     ) -> dict:
         """Single-step analysis for fast tasks (no CoT overhead)."""
         try:
-            return await ollama_client.generate_json(analysis_prompt, system_prompt=SYSTEM_PROMPT, model=model)
+            return await api_client.generate_json(analysis_prompt, system_prompt=SYSTEM_PROMPT, model=model)
         except Exception as e:
             logger.error(f"Quick analysis failed: {e}")
             return {"error": str(e)}

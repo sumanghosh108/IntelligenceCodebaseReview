@@ -44,6 +44,21 @@ async def root():
     }
 
 
+@app.get("/health")
+async def root_health():
+    """Mirror health endpoint at root for direct access without /api prefix."""
+    from backend.llm.api_client import api_client
+    api_health = await api_client.check_health()
+    return {
+        "status": "healthy",
+        "llm_provider": "openrouter",
+        "model": api_client.model,
+        "api_provider": api_health,
+        "multi_agent_enabled": settings.multi_agent_enabled,
+        "storage_backend": settings.storage_backend,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

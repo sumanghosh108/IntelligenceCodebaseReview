@@ -29,7 +29,7 @@ from backend.analysis.prompts import (
     recommendation_prompt, abstraction_views_prompt, impact_analysis_llm_prompt,
     threat_model_prompt, auto_doc_prompt, failure_analysis_prompt,
 )
-from backend.llm.ollama_client import ollama_client
+from backend.llm.api_client import api_client
 from backend.llm.model_router import model_router
 from backend.llm.chain_of_thought import cot_pipeline
 from backend.embeddings.vector_store import vector_store
@@ -989,6 +989,146 @@ class AnalysisEngine:
         cache.set("llm", prompt_hash, result)
         return result
 
+    async def analyze_repo_multi_agent(
+        self,
+        repo_url: str,
+        branch: str = "main",
+        result_ref: AnalysisResult = None,
+    ) -> AnalysisResult:
+        """Run analysis using the distributed multi-agent system.
+
+        Uses the Orchestrator to coordinate 8 specialized agents:
+          ParserAgent → GraphAgent + CodeAnalysisAgent → SecurityAgent + ArchitectureAgent + PerformanceAgent
+          → DocumentationAgent → SynthesisAgent
+        """
+        from backend.agents.shared_memory import SharedMemory
+        from backend.agents.orchestrator import Orchestrator
+        from datetime import datetime, timezone
+        import uuid
+
+        # Check cache first
+        cache_key = f"{repo_url}@{branch}"
+        if cache_key in self._result_cache:
+            cached = self._result_cache[cache_key]
+            if cached.status == AnalysisStatus.COMPLETED:
+                logger.info(f"Cache hit for {repo_url}")
+                if result_ref:
+                    new_job_id = result_ref.job_id
+                    new_created = result_ref.created_at
+                    for field in cached.model_fields:
+                        setattr(result_ref, field, getattr(cached, field))
+                    result_ref.job_id = new_job_id
+                    result_ref.created_at = new_created
+                return result_ref or cached
+
+        result = result_ref or AnalysisResult(repo_url=repo_url, status=AnalysisStatus.ANALYZING)
+        if not result.job_id:
+            result.job_id = str(uuid.uuid4())
+        result.branch = branch
+        result.created_at = datetime.now(timezone.utc).isoformat()
+        result.status = AnalysisStatus.ANALYZING
+
+        # Initialize progress steps for multi-agent
+        result.progress_steps = [
+            {"phase": "phase_1_parse", "label": "Phase 1: Parse & Embed", "status": "pending", "duration_ms": None},
+            {"phase": "phase_2_structure", "label": "Phase 2: Graphs & Health", "status": "pending", "duration_ms": None},
+            {"phase": "phase_3_deep", "label": "Phase 3: Deep Analysis", "status": "pending", "duration_ms": None},
+            {"phase": "phase_4_docs", "label": "Phase 4: Documentation", "status": "pending", "duration_ms": None},
+            {"phase": "phase_5_synthesis", "label": "Phase 5: Final Synthesis", "status": "pending", "duration_ms": None},
+        ]
+
+        try:
+            memory = SharedMemory()
+            orchestrator = Orchestrator(memory)
+
+            # Run the pipeline, collecting events
+            agent_events = []
+            async for event in orchestrator.run(repo_url, branch):
+                agent_events.append(event)
+                # Update progress steps based on events
+                if event.get("type") == "phase_started":
+                    phase = event.get("data", {}).get("phase")
+                    result.current_phase = phase or result.current_phase
+                    for step in result.progress_steps:
+                        if step["phase"] == phase:
+                            step["status"] = "running"
+                elif event.get("type") == "phase_completed":
+                    phase = event.get("data", {}).get("phase")
+                    duration = event.get("data", {}).get("duration_ms")
+                    for step in result.progress_steps:
+                        if step["phase"] == phase:
+                            step["status"] = "done"
+                            step["duration_ms"] = duration
+                elif event.get("type") == "failed":
+                    result.stage_errors.append({
+                        "phase": event.get("agent", "unknown"),
+                        "error": event.get("message", ""),
+                        "timestamp": event.get("timestamp", ""),
+                    })
+
+            # Build final result from shared memory
+            final_data = await orchestrator.build_result()
+
+            # Map to AnalysisResult fields
+            result.quick_stats = final_data.get("quick_stats")
+            result.repo_overview = final_data.get("repo_overview")
+            result.tech_stack = final_data.get("tech_stack")
+            result.modules = final_data.get("modules")
+            result.file_analyses = final_data.get("file_analyses")
+            result.function_analyses = final_data.get("function_analyses")
+            result.dependencies = final_data.get("dependencies")
+            result.system_flow = final_data.get("system_flow")
+            result.flow_diagram = final_data.get("flow_diagram")
+            result.production_readiness = final_data.get("production_readiness")
+            result.security_analysis = final_data.get("security_analysis")
+            result.cost_analysis = final_data.get("cost_analysis")
+            result.interview_explainer = final_data.get("interview_explainer")
+            result.master_synthesis = final_data.get("master_synthesis")
+            result.health_dashboard = final_data.get("health_dashboard")
+            result.call_graph = final_data.get("call_graph")
+            result.knowledge_graph = final_data.get("knowledge_graph")
+            result.recommendations = final_data.get("recommendations")
+            result.abstraction_views = final_data.get("abstraction_views")
+            result.code_quality = final_data.get("code_quality")
+            result.api_contracts = final_data.get("api_contracts")
+            result.db_schema = final_data.get("db_schema")
+            result.perf_bottlenecks = final_data.get("perf_bottlenecks")
+            result.complexity_score = final_data.get("complexity_score")
+            result.architecture_patterns = final_data.get("architecture_patterns")
+            result.security_threats = final_data.get("security_threats")
+            result.failure_modes = final_data.get("failure_modes")
+            result.timeline = final_data.get("timeline")
+            result.auto_docs = final_data.get("auto_docs")
+
+            result.status = AnalysisStatus.COMPLETED
+            result.current_phase = "completed"
+
+            # Cache hybrid search for later queries
+            hybrid = await memory.get("embeddings.hybrid")
+            if hybrid:
+                self._hybrid_search_cache[repo_url] = hybrid
+            # Cache parsed files for agent queries
+            parsed = await memory.get("parsed.files")
+            if parsed:
+                self._parsed_cache[repo_url] = parsed
+
+            # Cache result
+            self._result_cache[cache_key] = result
+            try:
+                cache.set("result", cache_key, result.model_dump())
+            except Exception as e:
+                logger.warning(f"Failed to cache result: {e}")
+
+            logger.info(f"Multi-agent analysis completed for {repo_url}")
+
+        except Exception as e:
+            result.status = AnalysisStatus.FAILED
+            result.current_phase = "failed"
+            result.errors.append(str(e))
+            logger.error(f"Multi-agent analysis failed: {e}", exc_info=True)
+
+        return result
+
     async def get_impact_analysis(self, repo_url: str, target: str, target_type: str = "file") -> dict:
         """On-demand impact analysis for a specific file or function."""
         parsed_files = self._parsed_cache.get(repo_url)
@@ -1109,7 +1249,7 @@ You MUST respond with valid JSON only, no other text:
 
         # Don't use _llm_analyze (which caches) — queries should always be fresh
         system = "You are a helpful code analysis assistant. Always respond with valid JSON."
-        raw = await ollama_client.generate(prompt, system_prompt=system)
+        raw = await api_client.generate(prompt, system_prompt=system)
         logger.info(f"RAG raw response ({search_method}): {raw[:300]}")
 
         # Parse JSON from the raw response

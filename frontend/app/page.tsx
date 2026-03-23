@@ -39,7 +39,12 @@ export default function Home() {
   const [stageErrors, setStageErrors] = useState<StageError[]>([]);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
-  const [health, setHealth] = useState<{ ollama_connected: boolean; available_models: string[] } | null>(null);
+  const [health, setHealth] = useState<{
+    llm_provider?: string;
+    model?: string;
+    multi_agent_enabled?: boolean;
+    api_provider?: { status: string; provider?: string; model?: string };
+  } | null>(null);
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
@@ -116,18 +121,22 @@ export default function Home() {
           Production-grade open-source codebase analysis system
         </p>
         {health && (
-          <div className="mt-3 flex justify-center gap-3">
-            <span
-              className={`badge ${
-                health.ollama_connected ? "badge-green" : "badge-red"
-              }`}
-            >
-              Ollama: {health.ollama_connected ? "Connected" : "Disconnected"}
+          <div className="mt-3 flex flex-wrap justify-center gap-2">
+            {/* Provider status */}
+            <span className={`badge ${
+              health.api_provider?.status === "healthy" ? "badge-green" : "badge-red"
+            }`}>
+              OpenRouter: {health.api_provider?.status === "healthy" ? "Connected" : "Error"}
             </span>
-            {health.available_models && (
-              <span className="badge badge-blue">
-                Models: {health.available_models.join(", ") || "none"}
-              </span>
+
+            {/* Model */}
+            {health.model && (
+              <span className="badge badge-blue">{health.model}</span>
+            )}
+
+            {/* Multi-agent badge */}
+            {health.multi_agent_enabled && (
+              <span className="badge badge-blue">Multi-Agent</span>
             )}
           </div>
         )}

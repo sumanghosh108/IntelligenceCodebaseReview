@@ -12,3 +12,8 @@ httpx==0.28.1
 aiofiles==25.1.0
 jinja2==3.1.6
 python-multipart==0.0.22
+# Supabase (vector store + job tracking)
+supabase>=2.10.0
+# LlamaIndex knowledge layer
+llama-index-core>=0.12.0
+llama-index-embeddings-huggingface>=0.5.0
